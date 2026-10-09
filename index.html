@@ -29,6 +29,7 @@ canvas{width:100%;height:280px;background:#101728;border-radius:14px}
 .payment-dot{width:11px;height:11px;border-radius:50%;flex:none}.payment-info{flex:1}.payment-name{font-weight:700;font-size:13px}.payment-pct{font-size:11px;color:var(--muted)}.payment-amount{font-weight:800;font-size:13px}
 @media(max-width:650px){.payment-layout{grid-template-columns:1fr}.payment-donut{max-width:330px;margin:auto}}
 .footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
+.backup-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.backup-actions button{min-height:48px}.backup-note{font-size:12px;color:var(--muted);line-height:1.6;margin-top:10px}@media(max-width:430px){.backup-actions{grid-template-columns:1fr}}
 @media(max-width:760px){.grid,.stats{grid-template-columns:1fr 1fr}.form{grid-template-columns:1fr 1fr}.form button{grid-column:1/-1}.categories{grid-template-columns:1fr}}
 @media(max-width:430px){.grid,.stats{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.form{grid-template-columns:1fr}}
 </style>
@@ -107,6 +108,16 @@ canvas{width:100%;height:280px;background:#101728;border-radius:14px}
     <div id="movements"></div>
   </div>
 
+  <div class="card" id="backupSection">
+    <h3>🔐 Copia de seguridad</h3>
+    <p class="sub">Protege tus ingresos y gastos de todos los meses. Guarda el archivo en un lugar seguro.</p>
+    <div class="backup-actions">
+      <button type="button" onclick="exportBackup()">⬇️ Exportar copia</button>
+      <button type="button" class="secondary" onclick="document.getElementById('backupFile').click()">⬆️ Restaurar copia</button>
+    </div>
+    <input type="file" id="backupFile" accept=".json,application/json" style="display:none" onchange="importBackup(event)">
+    <div class="backup-note">La restauración reemplaza los registros actuales después de tu confirmación. Antes de restaurar, exporta una copia de los datos que tengas en este dispositivo.</div>
+  </div>
   <div class="footer">Tus datos se guardan localmente en este navegador/dispositivo.</div>
 </div>
 
@@ -122,7 +133,7 @@ const payments=['INTERBANK AE','INTERBANK VISA','BCP','SCOTIABANK','BBVA','DINNE
 const key='mis_finanzas_dark_v3';
 let data=JSON.parse(localStorage.getItem(key)||'{"months":{}}');
 const now=new Date(), currentYear=now.getFullYear();
-const years=[currentYear,currentYear+1];
+const years=Array.from({length:2035-2026+1},(_,i)=>2026+i);
 const $=id=>document.getElementById(id);
 years.forEach(y=>$('year').add(new Option(y,y)));
 for(let m=0;m<12;m++) $('month').add(new Option(new Date(2000,m,1).toLocaleDateString('es-PE',{month:'long'}),m));
@@ -131,6 +142,45 @@ $('year').value=currentYear;$('month').value=now.getMonth();
 function monthKey(){return `${$('year').value}-${String(Number($('month').value)+1).padStart(2,'0')}`}
 function monthData(){let k=monthKey(); if(!data.months[k]) data.months[k]={income:0,expenses:[]}; return data.months[k]}
 function save(){localStorage.setItem(key,JSON.stringify(data))}
+function exportBackup(){
+  try{
+    const payload={app:'Mis Finanzas',format:'mis-finanzas-backup',version:1,exportedAt:new Date().toISOString(),data:JSON.parse(localStorage.getItem(key)||JSON.stringify(data))};
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    const stamp=new Date().toLocaleDateString('en-CA');
+    link.href=url;link.download=`mis-finanzas-respaldo-${stamp}.json`;
+    document.body.appendChild(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+  }catch(err){alert('No se pudo exportar la copia de seguridad: '+err.message)}
+}
+function validateBackup(value){
+  if(!value||typeof value!=='object'||Array.isArray(value)||value.format!=='mis-finanzas-backup'||value.version!==1)throw Error('El archivo no corresponde a una copia compatible de Mis Finanzas.');
+  const candidate=value.data;
+  if(!candidate||typeof candidate!=='object'||Array.isArray(candidate)||!candidate.months||typeof candidate.months!=='object'||Array.isArray(candidate.months))throw Error('La estructura de meses no es válida.');
+  for(const [month,entry] of Object.entries(candidate.months)){
+    if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||!entry||typeof entry!=='object'||Array.isArray(entry)||!Number.isFinite(entry.income)||entry.income<0||!Array.isArray(entry.expenses))throw Error('Datos mensuales no válidos: '+month);
+    for(const expense of entry.expenses){
+      if(!expense||typeof expense!=='object'||Array.isArray(expense)||typeof expense.category!=='string'||typeof expense.payment!=='string'||typeof expense.detail!=='string'||!Number.isFinite(expense.amount)||expense.amount<=0||typeof expense.date!=='string')throw Error('Se encontró un gasto no válido en '+month);
+    }
+  }
+  return candidate;
+}
+async function importBackup(event){
+  const input=event.target,file=input.files&&input.files[0];
+  if(!file)return;
+  try{
+    if(file.size>10*1024*1024)throw Error('El archivo supera el límite de 10 MB.');
+    const payload=JSON.parse(await file.text()),restored=validateBackup(payload);
+    const months=Object.keys(restored.months).length;
+    const expenses=Object.values(restored.months).reduce((sum,m)=>sum+m.expenses.length,0);
+    if(!confirm(`Esta copia contiene ${months} mes(es) y ${expenses} gasto(s).\n\nATENCIÓN: reemplazará todos los datos actuales de este dispositivo. ¿Ya exportaste una copia de tus datos actuales y deseas continuar?`))return;
+    const serialized=JSON.stringify(restored);
+    localStorage.setItem(key,serialized);
+    data=restored;render();
+    alert('Copia restaurada correctamente.');
+  }catch(err){alert('No se restauró ningún dato. '+err.message)}
+  finally{input.value=''}
+}
 function money(n){return 'S/ '+Number(n||0).toLocaleString('es-PE',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function selectedCat(){return cats.find(c=>c[1]==$('category').value)||cats[0]}
 function render(){
